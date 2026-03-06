@@ -1,0 +1,15 @@
+from enum import IntEnum
+
+class MsgType(IntEnum):
+    CHOKE = 0
+    UNCHOKE = 1
+    INTERESTED = 2
+    NOT_INTERESTED = 3
+    HAVE = 4
+    BITFIELD = 5
+    REQUEST = 6
+    PIECE = 7
+
+HANDSHAKE_HEADER = b'P2PFILESHARINGPROJ'
+HANDSHAKE_ZEROS = b'\x00' * 10
+HANDSHAKE_LEN = 32
