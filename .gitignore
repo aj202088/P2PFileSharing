@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Config test files (large data)
+project_config_file_large/
+project_config_file_small/
+Docs/
