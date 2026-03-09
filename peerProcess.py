@@ -14,16 +14,20 @@ https://realpython.com/python-sockets/ - socket programming basics in python
 '''
 # Main
 def main():
-    peerID = int(sys.argv[1]) # Grabs peerID from cmd line
+    # Grabs peerID from cmd line
+    peerID = int(sys.argv[1])
     commInf, pieces = readComm()
     allPeerInf = readPeer()
     peerInf = findPeerInf(allPeerInf, peerID)
-    bitfield = [1] * pieces if peerInf[3] == 1 else [0] * pieces # Makes bitfield dependent if they have file or not
+    # Makes bitfield dependent if they have file or not
+    bitfield = [1] * pieces if peerInf[3] == 1 else [0] * pieces
     createPeerDir(peerID)
-    serv = threading.Thread(target=servStart, args=(peerInf, bitfield), daemon=True) # Creates a thread for starting up the peer
+    # Creates a thread for starting up the peer
+    serv = threading.Thread(target=servStart, args=(peerInf, bitfield), daemon=True)
     serv.start()
     prevPeers(allPeerInf, peerInf, bitfield)
-    serv.join() # As long as server is up, main wont end
+    # As long as server is up, main wont end
+    serv.join()
 
  # Creates Directory as peer_peerID   
 def createPeerDir(peerID):
@@ -52,7 +56,8 @@ def readPeer():
     with open(filePath) as file:
         for fileLine in file:
             vals = fileLine.split()
-            allPeerInf.append([int(vals[0]), vals[1], int(vals[2]), int(vals[3])]) # [peerID, host, port#, hasFile]
+            # [peerID, host, port#, hasFile]
+            allPeerInf.append([int(vals[0]), vals[1], int(vals[2]), int(vals[3])])
     return allPeerInf
 
 # Grabs the specific peer's info from allPeerInf; return list [peerID, host, port#, hasFile]
@@ -66,8 +71,11 @@ def findPeerInf(allPeerInf, peerID):
 
 # Puts the peer socket up into listening, accepting other peers who connect
 def servStart(currPeerInf, bitfield):
+    try:
     # Peer server socket creation + set to listening
-    serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except socket.error as err:
+        print(f"Peer {currPeerInf[0]} failed socket creation. Err: {err}")
     serverSocket.bind((currPeerInf[1], currPeerInf[2]))
     serverSocket.listen()
     print(f"Peer {currPeerInf[0]} listening to {currPeerInf[2]}")
@@ -86,8 +94,10 @@ def prevPeers(allPeerInf, currPeerInf, bitfield):
                 # Creates a socket to connect to previous peer
                 connectingPeer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 connectingPeer.connect((otherPeers[1], otherPeers[2]))
-                send_handshake(connectingPeer, currPeerInf[0]) # Handshake between previous peer + this active peer
-                remoteID = recv_handshake(connectingPeer) # Handshake received
+                # Handshake between previous peer + this active peer
+                send_handshake(connectingPeer, currPeerInf[0])
+                # Handshake received
+                remoteID = recv_handshake(connectingPeer)
                 # Handle connection looping on a background thread; lets this peer keep establishing socket connections to other previous peers
                 threading.Thread(target=conn, args=(connectingPeer, currPeerInf[0], bitfield, remoteID), daemon=True).start()
             except ConnectionRefusedError:
@@ -95,19 +105,22 @@ def prevPeers(allPeerInf, currPeerInf, bitfield):
         if otherPeers[0] == currPeerInf[0]:
             break
 
-# Connection funct.
+# Connection funct
 def conn(connection, peerID, bitfield, remoteID=None):
     try:
+        # No previous handshake; do it here
         if (remoteID is None):
             remoteID = recv_handshake(connection)
             send_handshake(connection, int(peerID))
+        # Send 'bitfield' message to know file pieces
         if sum(bitfield) > 0:
             send_msg(connection, MsgType.BITFIELD, bytes(bitfield))
+        # Get messages from peer
         while True:
             msgType, data = recv_message(connection)
             print(f"Got: {msgType.name} From: {remoteID}")
     except ConnectionError:
-        print(f"lost peer connection {remoteID}")
+        print(f"Lost peer connection {remoteID}")
 
 if __name__ == "__main__":
     main()
