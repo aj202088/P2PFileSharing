@@ -1,5 +1,6 @@
 from enum import IntEnum
 
+
 class MsgType(IntEnum):
     CHOKE = 0
     UNCHOKE = 1
@@ -9,6 +10,7 @@ class MsgType(IntEnum):
     BITFIELD = 5
     REQUEST = 6
     PIECE = 7
+
 
 HANDSHAKE_HEADER = b'P2PFILESHARINGPROJ'
 HANDSHAKE_ZEROS = b'\x00' * 10
