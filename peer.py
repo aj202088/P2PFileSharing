@@ -9,26 +9,26 @@ from protocol import *
 from constants import *
 import time
 import random
-import socket
 
 
 class Peer:
     # Build Peer object
-    def __init__(self, common_info, peer_info):
+    def __init__(self, common_info, peer_info, all_peer_info, pieces):
 
         # Set info from common_info
-        self.k = common_info.k  # Desired nearest neighbors
-        self.p = common_info.p  # Unchoking interval
-        self.n = common_info.n  # Optimistic Unchoking interval
-        self.file_name = common_info.file_name
-        self.file_size = common_info.file_size
-        self.num_pieces = common_info.num_pieces
+        self.k = common_info[0]  # Desired nearest neighbors
+        self.p = common_info[1]  # Unchoking interval
+        self.n = common_info[2]  # Optimistic Unchoking interval
+        self.file_name = common_info[3]
+        self.file_size = common_info[4]
+        self.piece_size = common_info[5]
+        self.num_pieces = pieces
 
         # Set info from peer_info
-        self.peerID = peer_info.peerID
-        self.host_name = peer_info.host_name
-        self.listening_port = peer_info.listening_port
-        self.has_file = peer_info.has_file
+        self.peerID = peer_info[0]
+        self.host_name = peer_info[1]
+        self.listening_port = peer_info[2]
+        self.has_file = peer_info[3]
 
         # Set bitfield - all 1s if file exists, all 0s if not
         # Use bitArray to encode/decode bitfield
@@ -37,10 +37,15 @@ class Peer:
         if self.has_file:
             self.bitfield.set(1)
 
+        # Set up neighboring information from all_peer_info
+        # Include all peers except for self
+        self.neighbors = {peer[0]: peer for peer in all_peer_info if
+                          peer[0] != self.peerID}  # Get from config/initialization
+
         self.connections = {}  # Stores all connections with Peers
-        self.neighbors = {}  # Get from config/initialization
+
         self.unchoked_neighbors = []  # Stores unchoked neighbors/neighbors we want to exchange with
-        self.neighboring_download_rates = []  # Store neighboring download rates computed over interval p
+        self.neighboring_download_rates = []  # Store neighboring download rates computed over interval p, start with 0
 
     def choke(self, peer):
         # Block neighbor from getting data
@@ -105,8 +110,8 @@ class Peer:
     def compare_bitfields(self, bitfield, peer_bitfield):
         # Compare the bitfields against each other
         # If peer bitfield has any bits that the current bitfield does not have, it is interesting
-        for bit in bitfield:
-            if bit == 0 and peer_bitfield.bit == 1:
+        for i, bit in enumerate(bitfield):
+            if bit == 0 and peer_bitfield[i] == 1:
                 return True
 
         return False
@@ -114,20 +119,34 @@ class Peer:
     def interested(self, neighbors):
         # Check if neighbors have interesting pieces
         for neighbor in neighbors:
-            if self.compare_bitfields(self, self.bitfield, neighbor.bitfield):
+            if self.compare_bitfields(self.bitfield, neighbor.bitfield):
                 # Build and send interested message
-                build_msg(MsgType.INTERESTED, None)
-                send_msg(neighbor.listening_port, neighbor)
+                send_msg(self.connections[neighbor[0]], MsgType.INTERESTED)
+                send_msg(self.connections[neighbor[0]], neighbor)
             else:
                 # Build and send not interested message
-                build_msg(MsgType.NOT_INTERESTED, None)
-                send_msg(neighbor.listening_port, neighbor)
+                send_msg(self.connections[neighbor[0]], MsgType.NOT_INTERESTED)
+                send_msg(self.connections[neighbor[0]], neighbor)
 
     def exchange_pieces(self):
-        return None
+        # Get neighboring socket
+        socket = self.neighbors[0].listening_port
 
-    def connect(self):
-        return None
+        x = recv_message(socket, 1)
+        while x.msgType != MsgType.CHOKE:
 
-    def start(self):
-        return None
+            # Check if neighbor has any bits of interest
+            if self.interested(self, self.neighbors):
+                # send request for bit that peer has but self doesnt
+                bit = 1  # Arbitrary value
+                send_msg(socket, MsgType.REQUEST, bit)
+
+                # If piece is recieved
+                if x.msgType == MsgType.PIECE:
+                    # Save bit
+                    # Flip bit
+                    self.flip_bit(self, self.bitfield, x)
+
+    def flip_bit(self, bitfield, bit_index):
+        # Flip bit
+        self.bitfield[bit_index] = 1
