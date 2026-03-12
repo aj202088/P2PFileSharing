@@ -28,7 +28,12 @@ def main():
     bitfield = [1] * pieces if peerInf[3] == 1 else [0] * pieces
     createPeerDir(peerID)
     # Create peer object
-    peer_obj = Peer(commInf, peerInf, allPeerInf, pieces)
+    peer_obj = Peer(
+        [commInf["NumberOfPreferredNeighbors"], commInf["UnchokingInterval"],
+         commInf["OptimisticUnchokingInterval"], commInf["FileName"],
+         commInf["FileSize"], commInf["PieceSize"]],
+        peerInf, allPeerInf, pieces
+)
     # Creates a thread for starting up the peer
     serv = threading.Thread(target=servStart, args=(peerInf, bitfield), daemon=True)
     serv.start()
