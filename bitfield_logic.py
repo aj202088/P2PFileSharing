@@ -1,42 +1,16 @@
 import threading
-from protocol import send_msg, pack_piece_index, unpack_piece_index
+from protocol import pack_piece_index, unpack_piece_index
 from constants import MsgType
 
 
 # Logic for handling bitfield messages and maintaining the state of which pieces have been downloaded
 def create_bitfield_state(my_bitfield):
     return {
-        "my_bitfiled": my_bitfield,
+        "my_bitfield": list(my_bitfield),
         "neighbor_bitfields": {},
         "interest_state": {},
-        "connections": {},
         "lock": threading.Lock()
     }
-
-
-# Function to register a new connection for a peer and initialize state for that peer
-def register_connection(state, peer_id, connection):
-    # Initialize state for new peer
-    with state["lock"]:
-        # Only add connection if it doesn't already exist to avoid overwriting existing state
-        if peer_id not in state["connections"]:
-            state["connections"][peer_id] = connection
-
-
-# Function to remove a connection and all associated state for a peer
-def remove_connection(state, peer_id):
-    with state["lock"]:
-        # Remove connection for the peer if exists
-        if peer_id in state["connections"]:
-            del state["connections"][peer_id]
-        
-        # Remove neighbor bitfield for the peer if exists
-        if peer_id in state["neighbor_bitfields"]:
-            del state["neighbor_bitfields"][peer_id]
-        
-        # Remove interest state for the peer if exists
-        if peer_id in state["interest_state"]:
-            del state["interest_state"][peer_id]
 
 
 # Functions to pack bitfields into bytes for sending over the network
@@ -50,45 +24,35 @@ def pack_bitfield(bitfield):
         if bit:
             shift = 7 - (i % 8)
             curr_byte |= (1 << shift)
-        
+
         # If 8 bits processed, append current byte to the packed result and reset the current byte
         if (i % 8) == 7:
             packed.append(curr_byte)
             curr_byte = 0
-    
-    # If there are remaining bits not in byte, append the last byte to the packed result
+
+    # If there are remaining bits not filling a full byte, append the last byte
     if (len(bitfield) % 8) != 0:
         packed.append(curr_byte)
-    
     return bytes(packed)
 
 
 # Function to unpack bytes back into a bitfield list
 def unpack_bitfield(payload, num_pieces):
     bitfield = []
+
     # Iterate through each byte in the payload
     for byte in payload:
         # Iterate through each bit in the byte, starting from the most sig bit and append to the bitfield list
-        for shift in range (7, -1, -1):
+        for shift in range(7, -1, -1):
             bitfield.append((byte >> shift) & 1)
 
     return bitfield[:num_pieces]
 
 
-# Function to check if there are any pieces that the neighbor has that ours doesn't
-def has_interesting_piece(my_bitfield, neighbor_bitfield):
-    # Iterate through both bitfields and check if neighbor has a piece that ours doesn't
-    for my_bit, neighbor_bit in zip(my_bitfield, neighbor_bitfield):
-        # If neighbor has piece (neighbor_bit = 1) and we don't(my_bit = 0), then it's interesting
-        if neighbor_bit and not my_bit:
-            return True
-    return False
-
-
 # Function to store the neighbor's bitfield in the state dict
 def store_neighbor_bitfield(state, peer_id, bitfield):
     with state["lock"]:
-        state["neighbor_bitfields"][peer_id] = bitfield
+        state["neighbor_bitfields"][peer_id] = list(bitfield)
 
 
 # Function to update the neighbor's bitfield when receiving a HAVE message
@@ -98,71 +62,85 @@ def update_neighbor_have(state, peer_id, piece_index):
         if peer_id not in state["neighbor_bitfields"]:
             size = len(state["my_bitfield"])
             state["neighbor_bitfields"][peer_id] = [0] * size
-        
+
         # Set the bit for piece index to 1 to show neighbor has that piece
-        state["neighbor_bitfields"][peer_id][piece_index] = 1
+        if 0 <= piece_index < len(state["neighbor_bitfields"][peer_id]):
+            state["neighbor_bitfields"][peer_id][piece_index] = 1
 
 
-# Function to see if we should send an INTERESTED or NOT_INTERESTED message based on the neighbor's and our bitfield
-def send_interest_decision(connection, state, peer_id):
+# Function to check if we should be interested in this neighbor based on their bitfield and our bitfield
+def has_interesting_piece(my_bitfield, neighbor_bitfield):
+    # Iterate through both bitfields and check if neighbor has a piece that ours doesn't
+    for my_piece, neighbor_piece in zip(my_bitfield, neighbor_bitfield):
+        # If neighbor has piece (neighbor_piece = 1) and we don't(my_piece = 0), then it's interesting
+        if my_piece == 0 and neighbor_piece == 1:
+            return True
+    return False
+
+
+# Function to determine if we should be interested in this neighbor based on their bitfield and our bitfield
+def get_interest_decision(state, peer_id):
     with state["lock"]:
-        # Make copies of the bitfields and interest state to minimize time holding the lock
+        # Save copies of our bitfield and neighbor's bitfield to work with outside the lock to minimize time holding the lock
         my_bitfield = list(state["my_bitfield"])
         neighbor_bitfield = state["neighbor_bitfields"].get(peer_id)
-        last_interest = state["interest_state"].get(peer_id)
 
-    # Check if neighbor's bitfield is available, if not then can't make a decision yet
+    # If we do not know the neighbor's bitfield yet, do not show interest yet
     if neighbor_bitfield is None:
-        return
-    
-    interested = has_interesting_piece(my_bitfield, neighbor_bitfield)
-    # Check if our interest state changed since last time, if not then no need to send a message
-    if last_interest is not None and last_interest == interested:
-        return
-    
-    # If interested then send INTERESTED message
-    if interested:
-        send_msg(connection, MsgType.INTERESTED)
-    
-    # Else send NOT_INTERESTED message
-    else:
-        send_msg(connection, MsgType.NOT_INTERESTED)
-    
-    # Update the interest state for this peer in the state dict
+        return False
+
+    return has_interesting_piece(my_bitfield, neighbor_bitfield)
+
+
+# Function to get the last interest state we sent to this neighbor from the state dict
+def get_last_interest_state(state, peer_id):
+    # Read the last interest state stored for neighbor
+    with state["lock"]:
+        return state["interest_state"].get(peer_id)
+
+
+# Function to update the last interest state sent to neighbor in the state dict
+def set_last_interest_state(state, peer_id, interested):
+    # Save the last interest decision sent
     with state["lock"]:
         state["interest_state"][peer_id] = interested
 
 
-# Main function to handle new bitfield messages, update state, and send interest decision
-def handle_bitfield(connection, state, peer_id, payload, num_pieces):
+# Helper function to determine if a new interest message should be sent
+def get_interest_message(state, peer_id):
+    interested = get_interest_decision(state, peer_id)
+    last_interest = get_last_interest_state(state, peer_id)
+
+    # If this is the first decision or the decision changed, return the correct message type
+    if last_interest is None or last_interest != interested:
+        set_last_interest_state(state, peer_id, interested)
+
+        # If interested then return INTERESTED message type
+        if interested:
+            return MsgType.INTERESTED
+        # Else return NOT_INTERESTED message type
+        return MsgType.NOT_INTERESTED
+
+    return None
+
+
+# Main function to handle new bitfield messages, update state, and determine interest decision
+def handle_bitfield(state, peer_id, payload, num_pieces):
     neighbor_bitfield = unpack_bitfield(payload, num_pieces)
     store_neighbor_bitfield(state, peer_id, neighbor_bitfield)
-    send_interest_decision(connection, state, peer_id)
+    return get_interest_message(state, peer_id)
 
 
-# Function to handle HAVE messages, update neighbor's bitfield, and send interest decision
-def handle_have(connection, state, peer_id, payload):
+# Function to handle HAVE messages, update neighbor's bitfield, and determine interest decision
+def handle_have(state, peer_id, payload):
     piece_index = unpack_piece_index(payload)
     update_neighbor_have(state, peer_id, piece_index)
-    send_interest_decision(connection, state, peer_id)
+    return piece_index, get_interest_message(state, peer_id)
 
 
-# Function to broadcast HAVE message to all connected peers when getting a new piece
-def broadcast_have(state, piece_index):
-    payload = pack_piece_index(piece_index)
-
-    # Make a copy of connections to minimize time holding the lock while sending messages
-    with state["lock"]:
-        connections = list(state["connections"].items())
-
-    # Iterate through all connections and send HAVE message with the piece index payload
-    for peer_id, connection in connections:
-        try:
-            send_msg(connection, MsgType.HAVE, payload)
-
-        # If sending fails, ignore so connection handling code cleans up the state for that peer
-        except OSError:
-            pass
+# Helper function to build a HAVE message payload from a piece index
+def build_have_payload(piece_index):
+    return pack_piece_index(piece_index)
 
 
 # Getter function to retrieve our bitfield from the state dict
@@ -171,10 +149,12 @@ def get_my_bitfield(state):
         return list(state["my_bitfield"])
 
 
-# Setter function to update our bitfield in the state dict when we get a new piece
+# Setter function to update our bitfield in the state dict when getting a new piece
 def set_my_piece(state, piece_index):
     with state["lock"]:
-        state["my_bitfield"][piece_index] = 1
+        # If piece index is valid, set the bit for that piece index to 1 to show piece received
+        if 0 <= piece_index < len(state["my_bitfield"]):
+            state["my_bitfield"][piece_index] = 1
 
 
 # Getter function to retrieve neighbor's bitfield from the state dict
@@ -184,3 +164,21 @@ def get_neighbor_bitfield(state, peer_id):
         if peer_id not in state["neighbor_bitfields"]:
             return None
         return list(state["neighbor_bitfields"][peer_id])
+
+
+# Helper function to re-check all neighbors after gaining a new piece
+def reevaluate_all_interest(state):
+    updates = []
+
+    # Get a list of all neighbor IDs
+    with state["lock"]:
+        peer_ids = list(state["neighbor_bitfields"].keys())
+
+    # For each neighbor, check if interested
+    for peer_id in peer_ids:
+        msg_type = get_interest_message(state, peer_id)
+        # If the interest decision changed, add to updates list
+        if msg_type is not None:
+            updates.append((peer_id, msg_type))
+
+    return updates
