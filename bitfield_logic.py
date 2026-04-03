@@ -2,6 +2,15 @@ import threading
 from protocol import pack_piece_index, unpack_piece_index
 from constants import MsgType
 
+'''
+    CITATIONS:
+        https://realpython.com/python-thread-lock/ - threading lock usage
+        https://www.bittorrent.org/beps/bep_0003.html - BitTorrent peer wire protocol reference
+        https://github.com/bittorrent/bittorrent.org/blob/master/beps/bep_0052.rst - bitfield layout and interested/not interested message reference
+        https://wiki.theory.org/BitTorrentSpecification - detailed BitTorrent message behavior reference
+        https://github.com/webtorrent/bittorrent-protocol/blob/master/README.md - BitTorrent peer wire protocol library showing handshake, bitfield, have, and peer state handling implementation
+
+'''
 
 # Logic for handling bitfield messages and maintaining the state of which pieces have been downloaded
 def create_bitfield_state(my_bitfield):
