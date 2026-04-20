@@ -3,14 +3,21 @@ import os
 import socket
 import threading
 from math import ceil
-from protocol import send_handshake, recv_handshake, send_msg, recv_message, unpack_piece_index
+from protocol import send_handshake, recv_handshake, send_msg, recv_message, unpack_piece_index, pack_piece_index
 from constants import MsgType
 from bitfield_logic import (
     create_bitfield_state,
     pack_bitfield,
     handle_bitfield as process_bitfield,
     handle_have as process_have,
-    get_my_bitfield
+    get_my_bitfield,
+    set_my_piece,
+    reevaluate_all_interest,
+    pick_piece_to_request,
+    mark_piece_requested,
+    unmark_piece_requested,
+    count_my_pieces,
+    has_complete_file,
 )
 from peer import Peer
 
@@ -20,6 +27,7 @@ https://www.w3schools.com/python/python_file_open.asp - reading files in python
 https://www.geeksforgeeks.org/python/create-a-directory-in-python/ - creating directory in python
 https://www.geeksforgeeks.org/python/socket-programming-python/ - socket programming basics in python
 https://realpython.com/python-sockets/ - socket programming basics in python
+https://realpython.com/python-thread-lock/ - threading lock usage for shared state
 '''
 
 # Main
@@ -46,9 +54,25 @@ def main():
             peerInf, allPeerInf, pieces
         )
 
-        serv = threading.Thread(target=servStart, args=(peerInf, bitfield_state, pieces), daemon=True)
+        # Shared dict for mapping remote_id to peerconnection; protected by connections_lock
+        connections_map = {}
+        connections_lock = threading.Lock()
+
+        # common config needed for piece handlers with file name, piece size, and peer directory
+        common_cfg = {
+            "file_name": commInf["FileName"],
+            "file_size": commInf["FileSize"],
+            "piece_size": commInf["PieceSize"],
+            "peer_dir": f"peer_{peerID}",
+            "num_pieces": pieces,
+        }
+            
+        serv = threading.Thread(
+            target=servStart,
+            args=(peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg),
+            daemon=True)
         serv.start()
-        prevPeers(allPeerInf, peerInf, bitfield_state, pieces)
+        prevPeers(allPeerInf, peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg)
         serv.join()
 
     except KeyboardInterrupt:
@@ -100,7 +124,7 @@ def findPeerInf(allPeerInf, peerID):
 
 
 # Puts the peer socket up into listening, accepting other peers who connect
-def servStart(currPeerInf, bitfield_state, pieces):
+def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg):
     try:
         # Peer server socket creation + set to listening
         serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -114,11 +138,15 @@ def servStart(currPeerInf, bitfield_state, pieces):
         connection, address = serverSocket.accept()
         print(f"Peer {currPeerInf[0]} has connection from: {address}")
         # Creates a new PeerConnection thread for each incoming connection
-        PeerConnection(connection, currPeerInf[0], bitfield_state, pieces).start()
+        conn = PeerConnection(
+            connection, currPeerInf[0], bitfield_state, pieces,
+            connections_map, connections_lock, common_cfg
+        )
+        conn.start()
 
 
 # Loops through previous peers, establishing connections
-def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces):
+def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg):
     for otherPeers in allPeerInf:
         if otherPeers[0] != currPeerInf[0]:
             try:
@@ -130,7 +158,11 @@ def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces):
                 # Handshake received
                 remoteID = recv_handshake(connectingPeer)
                 # Handle connection on a PeerConnection thread
-                PeerConnection(connectingPeer, currPeerInf[0], bitfield_state, pieces, remoteID).start()
+                conn = PeerConnection(
+                    connectingPeer, currPeerInf[0], bitfield_state, pieces,
+                    connections_map, connections_lock, common_cfg, remote_id=remoteID
+                )
+                conn.start()
             except ConnectionRefusedError:
                 print(f"Failed connecting Peer {currPeerInf[0]} to Peer {otherPeers[0]}")
         if otherPeers[0] == currPeerInf[0]:
@@ -141,18 +173,23 @@ def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces):
 # Handles a single peer connection in a background thread
 class PeerConnection(threading.Thread):
 
-    def __init__(self, sock, local_id, bitfield_state, pieces, remote_id=None):
+    def __init__(self, sock, local_id, bitfield_state, pieces,
+                 connections_map, connections_lock, common_cfg, remote_id=None):
         super().__init__(daemon=True)
         self.sock = sock                        # tcp socket for this connection
         self.local_id = local_id                # this peer's own ID
         self.remote_id = remote_id              # the other peer's ID (None if incoming)
         self.bitfield_state = bitfield_state    # state for managing bitfields
         self.num_pieces = pieces                # Total number of pieces
+        self.connections_map = connections_map  # shared dict: map of active connections
+        self.connections_lock = connections_lock# lock for accessing connections_map
+        self.common_cfg = common_cfg            # common configuration
         self.remote_bitfield = None             # will be set when we get BITFIELD msg
         self.am_choked = True                   # are we choked by the remote peer
         self.am_interested = False              # are we interested in the remote peer
         self.peer_choked = True                 # is the remote peer choked by us
         self.peer_interested = False            # is the remote peer interested in us
+        self.in_flight_piece = None             # pieces we've requested but haven't received yet
 
     # Performs handshake; incoming peers receive first, outgoing already done
     def do_handshake(self):
@@ -165,6 +202,16 @@ class PeerConnection(threading.Thread):
             # Outgoing: handshake already exchanged
             print(f"[Peer {self.local_id}] Completed handshake with Peer {self.remote_id}")
 
+    # Register this connection in the shared map so HAVE broadcasts can reach it
+    def register_connection(self):
+        with self.connections_lock:
+            self.connections_map[self.remote_id] = self
+ 
+    # Remove this connection from the shared map on disconnect
+    def unregister_connection(self):
+        with self.connections_lock:
+            self.connections_map.pop(self.remote_id, None)
+
     # Sends bitfield to remote peer if we have any pieces
     def send_bitfield(self):
         local_bitfield = get_my_bitfield(self.bitfield_state)
@@ -172,15 +219,21 @@ class PeerConnection(threading.Thread):
             send_msg(self.sock, MsgType.BITFIELD, pack_bitfield(local_bitfield))
             print(f"[Peer {self.local_id}] Sent BITFIELD to Peer {self.remote_id}")
 
-    # Remote peer is choking us; we can no longer request pieces
+    # Remote peer is choking us; cancel any in-flight request and stop requesting
     def handle_choke(self, payload):
         self.am_choked = True
+        # Unmark any pieces we had requested but haven't received yet, since we're now choked
+        if self.in_flight_piece is not None:
+            unmark_piece_requested(self.bitfield_state, self.in_flight_piece)
+            self.in_flight_piece = None
         print(f"[Peer {self.local_id}] Choked by Peer {self.remote_id}")
 
     # Remote peer unchoked us; we can now request pieces
     def handle_unchoke(self, payload):
         self.am_choked = False
         print(f"[Peer {self.local_id}] Unchoked by Peer {self.remote_id}")
+        # Try to request piece since now we're unchoked
+        self.maybe_request_piece()
 
     # Remote peer is interested in our pieces
     def handle_interested(self, payload):
@@ -192,7 +245,7 @@ class PeerConnection(threading.Thread):
         self.peer_interested = False
         print(f"[Peer {self.local_id}] Peer {self.remote_id} is NOT INTERESTED")
 
-    # Remote peer has a new piece; update their bitfield
+    # Remote peer has a new piece; update their bitfield and reevaluate interest
     def handle_have(self, payload):
         piece_index, interest_msg = process_have(self.bitfield_state, self.remote_id, payload)
         print(f"[Peer {self.local_id}] Peer {self.remote_id} has piece {piece_index}")
@@ -225,10 +278,92 @@ class PeerConnection(threading.Thread):
         piece_index = unpack_piece_index(payload)
         print(f"[Peer {self.local_id}] Peer {self.remote_id} requested piece {piece_index}")
 
-    # We received a piece from remote peer
+    # Handles receiving a piece: saves to disk, updates bitfield, broadcasts HAVE,
+    # re-evaluates interest toward all neighbors, then requests the next piece
     def handle_piece(self, payload):
+
+        # 1. Parse piece index and raw data
         piece_index = unpack_piece_index(payload[:4])
+        piece_data = payload[4:]
         print(f"[Peer {self.local_id}] Received piece {piece_index} from Peer {self.remote_id}")
+
+        # 2. Save piece to disk
+        save_piece(self.common_cfg["peer_dir"], piece_index, piece_data)
+
+        # 3, Update our bitfield to mark we now have this piece
+        set_my_piece(self.bitfield_state, piece_index)
+        num_pieces_now = count_my_pieces(self.bitfield_state)
+        print(f"[Peer {self.local_id}] Now has {num_pieces_now}/{self.num_pieces} pieces")
+
+        # 4. Unmark in-flight tracking since we got the piece
+        unmark_piece_requested(self.bitfield_state, piece_index)
+        self.in_flight_piece = None
+
+        # 5. Broadcast HAVE to all other connections
+        self.broadcast_have(piece_index)
+
+        # 6. Re-evaluate interest toward all neighbors 
+        self.reevaluate_and_send_interest()
+
+        # 7> Request the next piece from this peer if still unchoked
+        if not self.am_choked:
+            self.maybe_request_piece()
+        
+        
+    # Picks a random missing piece that the remote has and sends a REQUEST if not choked
+    # CITATION: spec 'request and piece' section - random selection, no pipelining
+    def maybe_request_piece(self):
+
+        if self.am_choked:
+            return
+ 
+        piece_index = pick_piece_to_request(self.bitfield_state, self.remote_id)
+        if piece_index is None:
+            # Nothing left to request from this peer right now
+            return
+ 
+        # Mark as in-flight before sending so another connection can't grab it
+        mark_piece_requested(self.bitfield_state, piece_index)
+        self.in_flight_piece = piece_index
+ 
+        send_msg(self.sock, MsgType.REQUEST, pack_piece_index(piece_index))
+        print(f"[Peer {self.local_id}] Sent REQUEST for piece {piece_index} to Peer {self.remote_id}")
+
+    # Broadcasts HAVE to all connected peers after receiving a new piece so they can update their bitfields
+    # CITATION: spec 'interested and not interested' section - peers send interested/not interested after receiving HAVE
+    def broadcast_have(self, piece_index):
+        have_payload = pack_piece_index(piece_index)
+        with self.connections_lock:
+            peers_to_notify = list(self.connections_map.items())
+ 
+        for remote_id, conn in peers_to_notify:
+            if remote_id == self.remote_id:
+                continue  # skip the peer we just got the piece from
+            try:
+                send_msg(conn.sock, MsgType.HAVE, have_payload)
+                print(f"[Peer {self.local_id}] Broadcast HAVE piece {piece_index} to Peer {remote_id}")
+            except Exception as e:
+                print(f"[Peer {self.local_id}] Failed to send HAVE to Peer {remote_id}: {e}")
+
+    # Re-checks interest toward all neighbors after gaining a piece and sends updated messages
+    def reevaluate_and_send_interest(self):
+        updates = reevaluate_all_interest(self.bitfield_state)
+        with self.connections_lock:
+            conn_snapshot = dict(self.connections_map)
+ 
+        for peer_id, msg_type in updates:
+            conn = conn_snapshot.get(peer_id)
+            if conn is None:
+                continue
+            try:
+                if msg_type == MsgType.INTERESTED:
+                    send_msg(conn.sock, MsgType.INTERESTED, b'')
+                    print(f"[Peer {self.local_id}] Sent INTERESTED to Peer {peer_id} (re-eval)")
+                elif msg_type == MsgType.NOT_INTERESTED:
+                    send_msg(conn.sock, MsgType.NOT_INTERESTED, b'')
+                    print(f"[Peer {self.local_id}] Sent NOT_INTERESTED to Peer {peer_id} (re-eval)")
+            except Exception as e:
+                print(f"[Peer {self.local_id}] Failed to send interest update to Peer {peer_id}: {e}")
 
     # Routes incoming messages to the correct handler
     def dispatch(self, msg_type, payload):
@@ -252,6 +387,7 @@ class PeerConnection(threading.Thread):
     def run(self):
         try:
             self.do_handshake()
+            self.register_connection()
             self.send_bitfield()
             while True:
                 msg_type, payload = recv_message(self.sock)
@@ -260,8 +396,17 @@ class PeerConnection(threading.Thread):
         except ConnectionError:
             print(f"[Peer {self.local_id}] Lost connection to Peer {self.remote_id}")
         finally:
+            # release any in-flight piece if we were waiting for one from this peer
+            if self.in_flight_piece is not None:
+                unmark_piece_requested(self.bitfield_state, self.in_flight_piece)
+            self.unregister_connection()
             self.sock.close()
 
+# Helper function to save a piece's data to disk in the correct peer directory
+def save_piece(peer_dir, piece_index, data):
+    piece_path = os.path.join(peer_dir, f"piece_{piece_index}")
+    with open(piece_path, 'wb') as f:
+        f.write(data)
 
 if __name__ == "__main__":
     main()
