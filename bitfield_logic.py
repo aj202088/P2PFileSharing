@@ -13,6 +13,7 @@ from constants import MsgType
 
 '''
 
+
 # Logic for handling bitfield messages and maintaining the state of which pieces have been downloaded
 def create_bitfield_state(my_bitfield):
     return {
@@ -195,6 +196,7 @@ def reevaluate_all_interest(state):
 
     return updates
 
+
 # --- Piece request tracking (Sophia) --------------------------------------------------------------------
 
 # Randomly picks a piece that the remote peer has, we don't have, and isn't already in-flight
@@ -205,36 +207,40 @@ def pick_piece_to_request(state, peer_id):
         my_bf = state["my_bitfield"]
         neighbor_bf = state["neighbor_bitfields"].get(peer_id)
         requested = state["requested_pieces"]
- 
+
         if neighbor_bf is None:
             return None
- 
+
         # Build list of candidate pieces: remote has it, we don't, not in-flight
         candidates = [
             i for i, (mine, theirs) in enumerate(zip(my_bf, neighbor_bf))
             if mine == 0 and theirs == 1 and i not in requested
         ]
- 
+
     if not candidates:
         return None
- 
+
     return random.choice(candidates)
- 
+
+
 # Marks a piece index as in-flight so other connections don't also request it
 def mark_piece_requested(state, piece_index):
     with state["lock"]:
         state["requested_pieces"].add(piece_index)
- 
+
+
 # Removes a piece from in-flight tracking when received or when choked
 def unmark_piece_requested(state, piece_index):
     with state["lock"]:
         state["requested_pieces"].discard(piece_index)
- 
+
+
 # Returns how many pieces we currently have based on our bitfield
 def count_my_pieces(state):
     with state["lock"]:
         return sum(state["my_bitfield"])
- 
+
+
 # Returns True if we have all pieces based on our bitfield, False otherwise
 def has_complete_file(state):
     with state["lock"]:

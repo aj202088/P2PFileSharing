@@ -53,13 +53,6 @@ def main():
         bitfield_state = create_bitfield_state(bitfield)
         dir = createPeerDir(peerID)
 
-        peer_obj = Peer(
-            [commInf["NumberOfPreferredNeighbors"], commInf["UnchokingInterval"],
-             commInf["OptimisticUnchokingInterval"], commInf["FileName"],
-             commInf["FileSize"], commInf["PieceSize"]],
-            peerInf, allPeerInf, pieces
-        )
-
         # Shared dict for mapping remote_id to peerconnection; protected by connections_lock
         connections_map = {}
         connections_lock = threading.Lock()
@@ -72,14 +65,24 @@ def main():
             "peer_dir": f"peer_{peerID}",
             "num_pieces": pieces,
         }
+
+        # Create Peer object
+        peer_obj = Peer(
+            [commInf["NumberOfPreferredNeighbors"], commInf["UnchokingInterval"],
+             commInf["OptimisticUnchokingInterval"], commInf["FileName"],
+             commInf["FileSize"], commInf["PieceSize"]],
+            peerInf, allPeerInf, pieces, connections_map, connections_lock
+        )
+
         if peerInf[3] == 1:
             split(common_cfg, dir)
         serv = threading.Thread(
             target=servStart,
-            args=(peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg),
+            args=(peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj),
             daemon=True)
         serv.start()
-        prevPeers(allPeerInf, peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg)
+        peer_obj.start_intervals(peer_obj.p, peer_obj.m)   # Start timing intervals
+        prevPeers(allPeerInf, peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj)
         serv.join()
 
     except KeyboardInterrupt:
@@ -144,7 +147,7 @@ def findPeerInf(allPeerInf, peerID):
 
 
 # Puts the peer socket up into listening, accepting other peers who connect
-def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg):
+def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj):
     try:
         # Peer server socket creation + set to listening
         serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -160,13 +163,13 @@ def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_
         # Creates a new PeerConnection thread for each incoming connection
         conn = PeerConnection(
             connection, currPeerInf[0], bitfield_state, pieces,
-            connections_map, connections_lock, common_cfg
+            connections_map, connections_lock, common_cfg, peer_obj
         )
         conn.start()
 
 
 # Loops through previous peers, establishing connections
-def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg):
+def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj):
     for otherPeers in allPeerInf:
         if otherPeers[0] != currPeerInf[0]:
             try:
@@ -180,7 +183,7 @@ def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces, connections_map, 
                 # Handle connection on a PeerConnection thread
                 conn = PeerConnection(
                     connectingPeer, currPeerInf[0], bitfield_state, pieces,
-                    connections_map, connections_lock, common_cfg, remote_id=remoteID
+                    connections_map, connections_lock, common_cfg, peer_obj,  remote_id=remoteID
                 )
                 conn.start()
             except ConnectionRefusedError:
@@ -194,7 +197,7 @@ def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces, connections_map, 
 class PeerConnection(threading.Thread):
 
     def __init__(self, sock, local_id, bitfield_state, pieces,
-                 connections_map, connections_lock, common_cfg, remote_id=None):
+                 connections_map, connections_lock, common_cfg, peer_obj, remote_id=None):
         super().__init__(daemon=True)
         self.sock = sock                        # tcp socket for this connection
         self.local_id = local_id                # this peer's own ID
@@ -210,6 +213,7 @@ class PeerConnection(threading.Thread):
         self.peer_choked = True                 # is the remote peer choked by us
         self.peer_interested = False            # is the remote peer interested in us
         self.in_flight_piece = None             # pieces we've requested but haven't received yet
+        self.peer_obj = peer_obj                # Peer object
 
     # Performs handshake; incoming peers receive first, outgoing already done
     def do_handshake(self):
@@ -351,6 +355,13 @@ class PeerConnection(threading.Thread):
         save_piece(self.common_cfg["peer_dir"], piece_index, piece_data)
         self.logMsg(f"Peer [{self.local_id}] has downloaded the piece [{piece_index}] from [{self.remote_id}]. Now the number of pieces it has is [{count_my_pieces(self.bitfield_state)}].")
 
+        # Update download rates on peer_obj
+        with self.peer_obj.download_counter_lock:
+            if self.remote_id not in self.peer_obj.download_counter:
+                self.peer_obj.download_counter[self.remote_id] = 0
+            # So we can determine new k neighbors
+            self.peer_obj.download_counter[self.remote_id] += 1
+
         # 3. Update our bitfield to mark we now have this piece
         set_my_piece(self.bitfield_state, piece_index)
         num_pieces_now = count_my_pieces(self.bitfield_state)
@@ -379,8 +390,7 @@ class PeerConnection(threading.Thread):
 
         # 9. Check if globally done
         self.globalCheck()
-        
-        
+
     # Picks a random missing piece that the remote has and sends a REQUEST if not choked
     # CITATION: spec 'request and piece' section - random selection, no pipelining
     def maybe_request_piece(self):
