@@ -18,6 +18,7 @@ def create_bitfield_state(my_bitfield):
     return {
         "my_bitfield": list(my_bitfield),
         "neighbor_bitfields": {},
+        "prev_pref_neighbors": set(),
         "interest_state": {},
         "requested_pieces": set(),
         "lock": threading.Lock()
