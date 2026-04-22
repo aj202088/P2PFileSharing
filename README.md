@@ -53,8 +53,19 @@ Bitstring might need to be installed individually, using pip install bitstring
 
 ### Haylee Zuba
 #### Part 1:
+- Implemented Peer class
+- Implemented a basic setup for Peer functionality
+    - send `CHOKE`
+    - send `UNCHOKE`
+    - `Compare Bitfields`
+    - `Interested`
+     
 #### Part 2:
-
+- Implemented Timer intervals for Optimistically Selecting a new neighbor and Preferred neighbor selection
+- Implemented send `CHOKE` and send `UNCHOKE`
+- Implemented functionality for peers selecting new preferred neighbors
+- Implemented optimistic neighbor unchoking
+- Implemented caclulation of neighboring download rates
 
 ### Julian Garcia
 #### Part 1:
