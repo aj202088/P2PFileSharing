@@ -45,7 +45,6 @@ def main():
         allPeerInf = readPeer()
         peerInf = findPeerInf(allPeerInf, peerID)
         if peerInf is None:
-            # print(f"Peer {peerID} not found in PeerInfo.cfg")
             sys.exit(1)
 
         # Makes bitfield dependent if they have file or not
@@ -155,11 +154,9 @@ def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_
         print(f"Peer {currPeerInf[0]} failed socket creation. Err: {err}")
     serverSocket.bind((currPeerInf[1], currPeerInf[2]))
     serverSocket.listen()
-    # print(f"Peer {currPeerInf[0]} listening to {currPeerInf[2]}")
     while True:
         # Accepting socket connection
         connection, address = serverSocket.accept()
-        # print(f"Peer {currPeerInf[0]} has connection from: {address}")
         # Creates a new PeerConnection thread for each incoming connection
         conn = PeerConnection(
             connection, currPeerInf[0], bitfield_state, pieces,
@@ -222,11 +219,9 @@ class PeerConnection(threading.Thread):
             # Incoming: receive first, we don't know who they are, then send our handshake back
             self.remote_id = recv_handshake(self.sock)
             send_handshake(self.sock, self.local_id)
-            # print(f"[Peer {self.local_id}] Accepted handshake from Peer {self.remote_id}")
             self.logMsg(f"Peer [{self.local_id}] is connected from Peer [{self.remote_id}].")
         else:
             # Outgoing: handshake already exchanged
-            # print(f"[Peer {self.local_id}] Completed handshake with Peer {self.remote_id}")
             self.logMsg(f"Peer [{self.local_id}] makes a connection to Peer [{self.remote_id}].")
 
     # Register this connection in the shared map so HAVE broadcasts can reach it
@@ -244,7 +239,6 @@ class PeerConnection(threading.Thread):
         local_bitfield = get_my_bitfield(self.bitfield_state)
         if sum(local_bitfield) > 0:
             send_msg(self.sock, MsgType.BITFIELD, pack_bitfield(local_bitfield))
-            # print(f"[Peer {self.local_id}] Sent BITFIELD to Peer {self.remote_id}")
 
     # Remote peer is choking us; cancel any in-flight request and stop requesting
     def handle_choke(self, payload):
@@ -253,13 +247,11 @@ class PeerConnection(threading.Thread):
         if self.in_flight_piece is not None:
             unmark_piece_requested(self.bitfield_state, self.in_flight_piece)
             self.in_flight_piece = None
-        # print(f"[Peer {self.local_id}] Choked by Peer {self.remote_id}")
         self.logMsg(f"Peer [{self.local_id}] is choked by [{self.remote_id}].")
 
     # Remote peer unchoked us; we can now request pieces
     def handle_unchoke(self, payload):
         self.am_choked = False
-        # print(f"[Peer {self.local_id}] Unchoked by Peer {self.remote_id}")
         self.logMsg(f"Peer [{self.local_id}] is unchoked by [{self.remote_id}].")
         # Try to request piece since now we're unchoked
         self.maybe_request_piece()
@@ -268,13 +260,11 @@ class PeerConnection(threading.Thread):
     def handle_interested(self, payload):
         self.peer_interested = True
         self.logMsg(f"Peer [{self.local_id}] received the 'interested' message from [{self.remote_id}].")
-        # print(f"[Peer {self.local_id}] Peer {self.remote_id} is INTERESTED")
 
     # Remote peer is not interested in our pieces
     def handle_not_interested(self, payload):
         self.peer_interested = False
         self.logMsg(f"Peer [{self.local_id}] received the 'not interested' message from [{self.remote_id}].")
-        # print(f"[Peer {self.local_id}] Peer {self.remote_id} is NOT INTERESTED")
 
     # Remote peer has a new piece; update their bitfield and reevaluate interest
     def handle_have(self, payload):
@@ -283,36 +273,29 @@ class PeerConnection(threading.Thread):
             self.remote_bitfield = [0] * self.num_pieces
         self.remote_bitfield[piece_index] = 1
         self.logMsg(f"Peer [{self.local_id}] received the 'have' message from [{self.remote_id}] for the piece [{piece_index}].")
-        # print(f"[Peer {self.local_id}] Peer {self.remote_id} has piece {piece_index}")
         if interest_msg == MsgType.INTERESTED:
             self.am_interested = True
             send_msg(self.sock, MsgType.INTERESTED, b'')
-            # print(f"[Peer {self.local_id}] Sent INTERESTED to Peer {self.remote_id}")
         elif interest_msg == MsgType.NOT_INTERESTED:
             self.am_interested = False
             send_msg(self.sock, MsgType.NOT_INTERESTED, b'')
-            # print(f"[Peer {self.local_id}] Sent NOT_INTERESTED to Peer {self.remote_id}")
         self.globalCheck()
 
     # Stores remote bitfield and sends INTERESTED or NOT_INTERESTED
     def handle_bitfield(self, payload):
         self.remote_bitfield = unpack_bitfield(payload, self.num_pieces)
         interest_msg = process_bitfield(self.bitfield_state, self.remote_id, payload, self.num_pieces)
-        # print(f"[Peer {self.local_id}] Received BITFIELD from Peer {self.remote_id}")
         if interest_msg == MsgType.INTERESTED:
             self.am_interested = True
             send_msg(self.sock, MsgType.INTERESTED, b'')
-            # print(f"[Peer {self.local_id}] Sent INTERESTED to Peer {self.remote_id}")
         else:
             self.am_interested = False
             send_msg(self.sock, MsgType.NOT_INTERESTED, b'')
-            # print(f"[Peer {self.local_id}] Sent NOT_INTERESTED to Peer {self.remote_id}")
         self.globalCheck()
 
     # Remote peer is requesting a piece
     def handle_request(self, payload):
         piece_index = unpack_piece_index(payload)
-        # print(f"[Peer {self.local_id}] Peer {self.remote_id} requested piece {piece_index}")
         if self.peer_choked:
             return
         if not os.path.exists(os.path.join(self.common_cfg["peer_dir"], f"{piece_index}")):
@@ -320,7 +303,6 @@ class PeerConnection(threading.Thread):
         with open(os.path.join(self.common_cfg["peer_dir"], f"{piece_index}"), 'rb') as i:
             msgPayload = pack_piece_index(piece_index) + i.read()
             send_msg(self.sock, MsgType.PIECE, msgPayload)
-        # print(f"[Peer {self.local_id}] Sent piece {piece_index} to Peer {self.remote_id}")
         
     # Assembles the file by writing every piece file into file_name in peer_dir
     def assembleFile(self):
@@ -339,7 +321,6 @@ class PeerConnection(threading.Thread):
         if completed + 1 == self.total_peers:
             self.logMsg(f"Peer [{self.local_id}] has downloaded the complete file.")
             self.assembleFile()
-            # print(f"[Peer {self.local_id}] All done")
             os._exit(0)
 
     # Handles receiving a piece: saves to disk, updates bitfield, broadcasts HAVE,
@@ -349,7 +330,6 @@ class PeerConnection(threading.Thread):
         # 1. Parse piece index and raw data
         piece_index = unpack_piece_index(payload[:4])
         piece_data = payload[4:]
-        # print(f"[Peer {self.local_id}] Received piece {piece_index} from Peer {self.remote_id}")
 
         # 2. Save piece to disk
         save_piece(self.common_cfg["peer_dir"], piece_index, piece_data)
@@ -365,7 +345,6 @@ class PeerConnection(threading.Thread):
         # 3. Update our bitfield to mark we now have this piece
         set_my_piece(self.bitfield_state, piece_index)
         num_pieces_now = count_my_pieces(self.bitfield_state)
-        # print(f"[Peer {self.local_id}] Now has {num_pieces_now}/{self.num_pieces} pieces")
 
         # 4. Unmark in-flight tracking since we got the piece
         unmark_piece_requested(self.bitfield_state, piece_index)
@@ -400,7 +379,6 @@ class PeerConnection(threading.Thread):
         self.in_flight_piece = piece_index
  
         send_msg(self.sock, MsgType.REQUEST, pack_piece_index(piece_index))
-        # print(f"[Peer {self.local_id}] Sent REQUEST for piece {piece_index} to Peer {self.remote_id}")
 
     # Broadcasts HAVE to all connected peers after receiving a new piece so they can update their bitfields
     # CITATION: spec 'interested and not interested' section - peers send interested/not interested after receiving HAVE
@@ -412,7 +390,6 @@ class PeerConnection(threading.Thread):
         for remote_id, conn in peers_to_notify:
             try:
                 send_msg(conn.sock, MsgType.HAVE, have_payload)
-                # print(f"[Peer {self.local_id}] Broadcast HAVE piece {piece_index} to Peer {remote_id}")
             except Exception as e:
                 print(f"[Peer {self.local_id}] Failed to send HAVE to Peer {remote_id}: {e}")
 
@@ -430,11 +407,9 @@ class PeerConnection(threading.Thread):
             try:
                 if msg_type == MsgType.INTERESTED:
                     send_msg(conn.sock, MsgType.INTERESTED, b'')
-                    # print(f"[Peer {self.local_id}] Sent INTERESTED to Peer {peer_id} (re-eval)")
                     updatedPref.add(peer_id)
                 elif msg_type == MsgType.NOT_INTERESTED:
                     send_msg(conn.sock, MsgType.NOT_INTERESTED, b'')
-                    # print(f"[Peer {self.local_id}] Sent NOT_INTERESTED to Peer {peer_id} (re-eval)")
             except Exception as e:
                 print(f"[Peer {self.local_id}] Failed to send interest update to Peer {peer_id}: {e}")
         with self.bitfield_state["lock"]:
@@ -469,7 +444,6 @@ class PeerConnection(threading.Thread):
             self.send_bitfield()
             while True:
                 msg_type, payload = recv_message(self.sock)
-                # print(f"[Peer {self.local_id}] Got {msg_type.name} from Peer {self.remote_id}")
                 self.dispatch(msg_type, payload)
         except ConnectionError:
             print(f"[Peer {self.local_id}] Lost connection to Peer {self.remote_id}")
