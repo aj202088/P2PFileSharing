@@ -76,11 +76,13 @@ def main():
 
         if peerInf[3] == 1:
             split(common_cfg, dir)
+        server_ready = threading.Event()
         serv = threading.Thread(
             target=servStart,
-            args=(peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj),
+            args=(peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj, server_ready),
             daemon=True)
         serv.start()
+        server_ready.wait()
         peer_obj.start_intervals(peer_obj.p, peer_obj.m)   # Start timing intervals
         prevPeers(allPeerInf, peerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj)
         serv.join()
@@ -147,7 +149,7 @@ def findPeerInf(allPeerInf, peerID):
 
 
 # Puts the peer socket up into listening, accepting other peers who connect
-def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj):
+def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_lock, common_cfg, peer_obj, ready_event):
     try:
         # Peer server socket creation + set to listening
         serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -156,6 +158,7 @@ def servStart(currPeerInf, bitfield_state, pieces, connections_map, connections_
     serverSocket.bind((currPeerInf[1], currPeerInf[2]))
     serverSocket.listen()
     print(f"Peer {currPeerInf[0]} listening to {currPeerInf[2]}")
+    ready_event.set()
     while True:
         # Accepting socket connection
         connection, address = serverSocket.accept()

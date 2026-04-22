@@ -119,7 +119,7 @@ class Peer:
 
         # Get list of peers
         with self.connections_lock:
-            peer_list = dict(self.connections_map)
+            peer_list = list(self.connections_map.items())
 
         # Find interested neighbors
         interested_peers = [peer_id for peer_id, conn in peer_list.items() if conn.peer_interested]
