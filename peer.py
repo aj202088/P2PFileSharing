@@ -11,14 +11,14 @@ import random
 from datetime import datetime
 import threading
 
-_log_locks = {}
-_log_locks_lock = threading.Lock()
+logLocks = {}
+logThread = threading.Lock()
 
-def get_log_lock(peer_id):
-    with _log_locks_lock:
-        if peer_id not in _log_locks:
-            _log_locks[peer_id] = threading.Lock()
-        return _log_locks[peer_id]
+def getLogLock(peerID):
+    with logThread:
+        if peerID not in logLocks:
+            logLocks[peerID] = threading.Lock()
+        return logLocks[peerID]
 
 class Peer:
     # Build Peer object
@@ -179,7 +179,7 @@ class Peer:
         self.logMsg(f"Peer [{self.peerID}] has the optimistically unchoked neighbor [{random_peer_id}].")
 
     def logMsg(self, message):
-        lock = get_log_lock(self.peerID)
+        lock = getLogLock(self.peerID)
         with lock:
             with open(f"log_peer_{self.peerID}.log", "a") as x:
                 x.write(f"[{datetime.now()}]: {message}\n")

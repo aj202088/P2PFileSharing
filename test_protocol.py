@@ -9,7 +9,7 @@ def test_handshake():
 
     assert len(handshake) == 32
     assert parsed_id == peer_id
-    print("Handshake test passed")
+    # print("Handshake test passed")
 
 
 def test_message():
@@ -23,7 +23,7 @@ def test_message():
     assert msg_len == 1 + len(payload)
     assert msg_type == MsgType.BITFIELD
     assert msg_payload == payload
-    print("Message build test passed")
+    # print("Message build test passed")
 
 
 def test_piece_index():
@@ -32,7 +32,7 @@ def test_piece_index():
     unpacked = unpack_piece_index(packed)
 
     assert unpacked == index
-    print("Piece index test passed")
+    # print("Piece index test passed")
 
 
 def test_bitfield():
@@ -40,7 +40,7 @@ def test_bitfield():
     assert expected_bitfield_len(8) == 1
     assert expected_bitfield_len(9) == 2
     assert validate_bitfield(b"\x00", 8) is True
-    print("Bitfield helper test passed")
+    # print("Bitfield helper test passed")
 
 
 def test_socket_roundtrip():
@@ -61,7 +61,7 @@ def test_socket_roundtrip():
         assert msg_type == MsgType.HAVE
         assert unpack_piece_index(payload) == 4
 
-        print("Socket roundtrip test passed")
+        # print("Socket roundtrip test passed")
 
     finally:
         sock1.close()
@@ -74,4 +74,4 @@ if __name__ == "__main__":
     test_piece_index()
     test_bitfield()
     test_socket_roundtrip()
-    print("All protocol tests passed")
+    # print("All protocol tests passed")

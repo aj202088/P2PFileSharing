@@ -15,6 +15,10 @@ Ex:
 Bitstring might need to be installed individually, using pip install bitstring
 
 
+## Demo Video Submission
+Included with Canvas submission, outside of zip folder
+
+
 ## Team Member Contributions
 
 ### Ashton Penalacia
@@ -69,4 +73,14 @@ Bitstring might need to be installed individually, using pip install bitstring
 
 ### Julian Garcia
 #### Part 1:
+- Implemented config file parsing (common.cfg + peerInfo.cfg)
+- Implemented peer subdirectory creation
+- Implemented server accept loop
+- Implemented connection to earlier peers
 #### Part 2:
+- Implemented `REQUEST` processing
+- Implemented reading pieces from file
+- Implemented writing pieces to peer dir
+- Implemented file assembly
+- Implemented logging
+- Implemented process exiting
