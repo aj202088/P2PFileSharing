@@ -7,18 +7,19 @@ https://stackoverflow.com/questions/7198388/accessing-bitfields-while-reading-wr
 from bitstring import BitArray
 from protocol import *
 from constants import *
-import time
 import random
+from datetime import datetime
+import threading
 
 
 class Peer:
     # Build Peer object
-    def __init__(self, common_info, peer_info, all_peer_info, pieces):
+    def __init__(self, common_info, peer_info, all_peer_info, pieces, connection_map, connections_lock):
 
         # Set info from common_info
         self.k = common_info[0]  # Desired nearest neighbors
         self.p = common_info[1]  # Unchoking interval
-        self.n = common_info[2]  # Optimistic Unchoking interval
+        self.m = common_info[2]  # Optimistic Unchoking interval
         self.file_name = common_info[3]
         self.file_size = common_info[4]
         self.piece_size = common_info[5]
@@ -42,111 +43,121 @@ class Peer:
         self.neighbors = {peer[0]: peer for peer in all_peer_info if
                           peer[0] != self.peerID}  # Get from config/initialization
 
-        self.connections = {}  # Stores all connections with Peers
+        self.connections_map = connection_map  # Stores all connections with Peers
+        self.connections_lock = connections_lock  # Protects connections
 
         self.unchoked_neighbors = []  # Stores unchoked neighbors/neighbors we want to exchange with
-        self.neighboring_download_rates = []  # Store neighboring download rates computed over interval p, start with 0
+
+        self.download_counter = {}   # used to store neighboring download rates
+        self.download_counter_lock = threading.Lock()   # Protects download counter
+
+    def start_intervals(self, p, m):
+        """SOURCE: https://www.tutorialspoint.com/python/python_thread_scheduling.htm"""
+        # Create timer threads
+        t1 = threading.Timer(self.p, self.choose_new_neighbors_loop)
+        t2 = threading.Timer(self.m, self.optimistic_unchoking_loop)
+        t1.daemon = True
+        t2.daemon = True
+        # Start threads
+        t1.start()
+        t2.start()
+
+    def optimistic_unchoking_loop(self):
+        # Call function
+        self.optimistic_unchoke()
+        # Reset timer
+        t = threading.Timer(self.m, self.optimistic_unchoking_loop)
+        t.daemon = True
+        t.start()
+
+    def choose_new_neighbors_loop(self):
+        # Call function
+        self.update_k_pref_neighbors()
+        # Reset timer
+        t = threading.Timer(self.p, self.choose_new_neighbors_loop)
+        t.daemon = True
+        t.start()
 
     def choke(self, peer):
-        # Block neighbor from getting data
-        choke_msg = build_msg(MsgType.CHOKE, None)
+        # Verify peer connection exists
+        with self.connections_lock:
+            conn = self.connections_map.get(peer.peer_id)
 
-        # Get peer port
-        port = self.connections[peer.peerID]
+        # If connection does not exist, return
+        if conn is None:
+            return
 
-        # Remove neighbor from unchoked
-        for neighbor in self.unchoked_neighbors:
-            if neighbor == peer:
-                self.unchoked_neighbors.remove(neighbor)
-
-        # need to send message
-        send_msg(port, choke_msg)
+        # Choke peer and log
+        conn.peer_choked = True
+        send_msg(conn.sock, MsgType.CHOKE, b'')
 
     def unchoke(self, peer):
-        # Allow neighbor to get data
-        unchoke_msg = build_msg(MsgType.UNCHOKE, None)
+        # Verify peer connection exists
+        with self.connections_lock:
+            conn = self.connections_map.get(peer.peer_id)
 
-        # Get peer port
-        port = self.connections[peer.peerID]
+        # If connection does not exist, return
+        if conn is None:
+            return
 
-        # Add neighbor to unchoked neighbors
-        self.unchoked_neighbors.append(peer)
+        # Unchoke peer and log
+        conn.peer_choked = False
+        send_msg(conn.sock, MsgType.UNCHOKE, b'')
 
-        # need to send message
-        send_msg(port, unchoke_msg)
+    def update_k_pref_neighbors(self):
 
-    def compute_download_rate(self, peer):
-        """TODO: Compute download rate for each neighbor"""
-        download_rate = 0
-        return download_rate
+        # Get list of peers
+        with self.connections_lock:
+            peer_list = dict(self.connections_map)
 
-    def update_k_neighbors(self):
-        # Run every p seconds
-        """Citation: https://stackoverflow.com/questions/474528/how-to-repeatedly-execute-a-function-every-x-seconds """
-        start_time = time.monotonic()
-        new_k_neighbors = []
-        while True:
-            # Compute new neighboring download rates
-            self.neighboring_download_rates.clear()
-            for neighbor in self.neighbors:
-                new_rate = self.compute_download_rate(neighbor)
-                self.neighboring_download_rates.append(new_rate)
+        # Find interested neighbors
+        interested_peers = [peer_id for peer_id, conn in peer_list.items() if conn.peer_interested]
 
-            # Sort from least to greatest rate
-            self.neighboring_download_rates.sort()
+        # Get download rates from each interested peer
+        with self.download_counter_lock:
+            download_rates = {peer_id: self.download_counter.get(peer_id, 0) for peer_id in interested_peers}
+            # Reset counts for next interval
+            self.download_counter = {}
 
-            """TODO: Implement tie breaking logic"""
+        # Sort by download rate, use a random tiebreak
+        new_neighbors = sorted(interested_peers, key=lambda p: download_rates[p], reverse=True)
+        new_k_neighbors = new_neighbors[:self.k]
 
-            # Get k new neighbors
-            for i in range(0, self.k):
-                new_k_neighbors.append(self.neighboring_download_rates[i])
+        # Log preferred neighbors
+        self.logMsg(f"Peer [{self.peerID}] has the preferred neighbors [{','.join(map(str, sorted(new_k_neighbors)))}].")
 
-            # Reset time
-            time.sleep(self.p - ((time.monotonic() - start_time) % self.p))
+        # Update choke/unchoke
+        for peer_id, conn in peer_list.items():
+            # Send unchoke msg to new k neighbors if choked
+            if peer_id in new_k_neighbors and conn.peer_choked:
+                conn.peer_choked = False
+                send_msg(conn.sock, MsgType.UNCHOKE, b'')
+            # Choke unchoked neighbors that are not k favorited
+            elif peer_id not in new_k_neighbors and not conn.peer_choked:
+                conn.peer_choked = True
+                send_msg(conn.sock, MsgType.CHOKE, b'')
 
-        # Return result
-        return new_k_neighbors
+    def optimistic_unchoke(self):
+        # Get list of peers
+        with self.connections_lock:
+            peer_list = dict(self.connections_map)
 
-    def compare_bitfields(self, bitfield, peer_bitfield):
-        # Compare the bitfields against each other
-        # If peer bitfield has any bits that the current bitfield does not have, it is interesting
-        for i, bit in enumerate(bitfield):
-            if bit == 0 and peer_bitfield[i] == 1:
-                return True
+        # Find interested and choked neighbors
+        choked_peers = [peer_id for peer_id, conn in peer_list.items() if conn.peer_interested and conn.peer_choked]
 
-        return False
+        # Randomly select a peer, if it exists
+        if not choked_peers:
+            return
+        random_peer_id = random.choice(choked_peers)
+        conn = peer_list[random_peer_id]
 
-    def interested(self, neighbors):
-        # Check if neighbors have interesting pieces
-        for neighbor in neighbors:
-            if self.compare_bitfields(self.bitfield, neighbor.bitfield):
-                # Build and send interested message
-                send_msg(self.connections[neighbor[0]], MsgType.INTERESTED)
-                send_msg(self.connections[neighbor[0]], neighbor)
-            else:
-                # Build and send not interested message
-                send_msg(self.connections[neighbor[0]], MsgType.NOT_INTERESTED)
-                send_msg(self.connections[neighbor[0]], neighbor)
+        # Unchoke peer
+        conn.peer_choked = False
+        send_msg(conn.sock, MsgType.UNCHOKE, b'')
 
-    def exchange_pieces(self):
-        # Get neighboring socket
-        socket = self.neighbors[0].listening_port
+        # Send unchoke message
+        self.logMsg(f"Peer [{self.peerID}] has the optimistically unchoked neighbor [{random_peer_id}].")
 
-        x = recv_message(socket, 1)
-        while x.msgType != MsgType.CHOKE:
-
-            # Check if neighbor has any bits of interest
-            if self.interested(self, self.neighbors):
-                # send request for bit that peer has but self doesnt
-                bit = 1  # Arbitrary value
-                send_msg(socket, MsgType.REQUEST, bit)
-
-                # If piece is recieved
-                if x.msgType == MsgType.PIECE:
-                    # Save bit
-                    # Flip bit
-                    self.flip_bit(self, self.bitfield, x)
-
-    def flip_bit(self, bitfield, bit_index):
-        # Flip bit
-        self.bitfield[bit_index] = 1
+    def logMsg(self, message):
+        with open(f"log_peer_{self.peerID}.log", "a") as x:
+            x.write(f"[{datetime.now()}]: {message}\n")
