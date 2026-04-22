@@ -2,7 +2,6 @@ from protocol import *
 from constants import MsgType
 import socket
 
-
 def test_handshake():
     peer_id = 1001
     handshake = build_handshake(peer_id)

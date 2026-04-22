@@ -197,8 +197,6 @@ def reevaluate_all_interest(state):
     return updates
 
 
-# --- Piece request tracking (Sophia) --------------------------------------------------------------------
-
 # Randomly picks a piece that the remote peer has, we don't have, and isn't already in-flight
 # Returns the piece index, or None if no candidates exist
 # CITATION: Random piece selection per project spec 'request and piece' section

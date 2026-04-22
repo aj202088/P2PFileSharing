@@ -192,7 +192,6 @@ def prevPeers(allPeerInf, currPeerInf, bitfield_state, pieces, connections_map, 
             break
 
 
-# Sophia's connection below
 # Handles a single peer connection in a background thread
 class PeerConnection(threading.Thread):
 
