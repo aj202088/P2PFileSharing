@@ -101,6 +101,10 @@ def get_interest_decision(state, peer_id):
     # If we do not know the neighbor's bitfield yet, do not show interest yet
     if neighbor_bitfield is None:
         return False
+    
+    for my_piece, neighbor_piece in zip(my_bitfield, neighbor_bitfield):
+        if my_piece == 0 and neighbor_piece == 1:
+            return True
 
     return has_interesting_piece(my_bitfield, neighbor_bitfield)
 
