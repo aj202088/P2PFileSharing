@@ -21,7 +21,7 @@ from bitfield_logic import (
     has_complete_file,
     unpack_bitfield,
 )
-from peer import Peer
+from peer import Peer, get_log_lock
 
 '''
 CITATIONS:
@@ -203,6 +203,7 @@ class PeerConnection(threading.Thread):
         self.remote_id = remote_id              # the other peer's ID (None if incoming)
         self.bitfield_state = bitfield_state    # state for managing bitfields
         self.num_pieces = pieces                # Total number of pieces
+        self.total_peers = len(peer_obj.neighbors) + 1 # Total number of peers
         self.connections_map = connections_map  # shared dict: map of active connections
         self.connections_lock = connections_lock# lock for accessing connections_map
         self.common_cfg = common_cfg            # common configuration
@@ -213,6 +214,7 @@ class PeerConnection(threading.Thread):
         self.peer_interested = False            # is the remote peer interested in us
         self.in_flight_piece = None             # pieces we've requested but haven't received yet
         self.peer_obj = peer_obj                # Peer object
+        _log_lock = threading.Lock()            # Locks log
 
     # Performs handshake; incoming peers receive first, outgoing already done
     def do_handshake(self):
@@ -277,8 +279,9 @@ class PeerConnection(threading.Thread):
     # Remote peer has a new piece; update their bitfield and reevaluate interest
     def handle_have(self, payload):
         piece_index, interest_msg = process_have(self.bitfield_state, self.remote_id, payload)
-        if self.remote_bitfield is not None:
-            self.remote_bitfield[piece_index] = 1
+        if self.remote_bitfield is None:
+            self.remote_bitfield = [0] * self.num_pieces
+        self.remote_bitfield[piece_index] = 1
         self.logMsg(f"Peer [{self.local_id}] received the 'have' message from [{self.remote_id}] for the piece [{piece_index}].")
         print(f"[Peer {self.local_id}] Peer {self.remote_id} has piece {piece_index}")
         if interest_msg == MsgType.INTERESTED:
@@ -331,13 +334,11 @@ class PeerConnection(threading.Thread):
         if not has_complete_file(self.bitfield_state):
             return
         with self.connections_lock:
-            total = list(self.connections_map.values())
-        completed = 0
-        for i in total:
-            bitField = i.remote_bitfield
-            if bitField and all(bitField):
-                completed += 1
-        if completed == len(total):
+            connect = dict(self.connections_map)
+        completed = sum(1 for conn in connect.values() if conn.remote_bitfield is not None and all(conn.remote_bitfield))
+        if completed + 1 == self.total_peers:
+            self.logMsg(f"Peer [{self.local_id}] has downloaded the complete file.")
+            self.assembleFile()
             print(f"[Peer {self.local_id}] All done")
             os._exit(0)
 
@@ -366,28 +367,21 @@ class PeerConnection(threading.Thread):
         num_pieces_now = count_my_pieces(self.bitfield_state)
         print(f"[Peer {self.local_id}] Now has {num_pieces_now}/{self.num_pieces} pieces")
 
-        # 4. Check for local completion of the file
-        if has_complete_file(self.bitfield_state):
-            self.logMsg(f"Peer [{self.local_id}] has downloaded the complete file.")
-            print(f"[Peer {self.local_id}] Now has file downloaded")
-            self.assembleFile()
-            print(f"[Peer {self.local_id}] Now has file assembled")
-
-        # 5. Unmark in-flight tracking since we got the piece
+        # 4. Unmark in-flight tracking since we got the piece
         unmark_piece_requested(self.bitfield_state, piece_index)
         self.in_flight_piece = None
 
-        # 6. Broadcast HAVE to all other connections
+        # 5. Broadcast HAVE to all other connections
         self.broadcast_have(piece_index)
 
-        # 7. Re-evaluate interest toward all neighbors 
+        # 6. Re-evaluate interest toward all neighbors 
         self.reevaluate_and_send_interest()
 
-        # 8. Request the next piece from this peer if still unchoked
+        # 7. Request the next piece from this peer if still unchoked
         if not self.am_choked:
             self.maybe_request_piece()
 
-        # 9. Check if globally done
+        # 8. Check if globally done
         self.globalCheck()
 
     # Picks a random missing piece that the remote has and sends a REQUEST if not choked
@@ -416,8 +410,6 @@ class PeerConnection(threading.Thread):
             peers_to_notify = list(self.connections_map.items())
  
         for remote_id, conn in peers_to_notify:
-            if remote_id == self.remote_id:
-                continue  # skip the peer we just got the piece from
             try:
                 send_msg(conn.sock, MsgType.HAVE, have_payload)
                 print(f"[Peer {self.local_id}] Broadcast HAVE piece {piece_index} to Peer {remote_id}")
@@ -490,8 +482,10 @@ class PeerConnection(threading.Thread):
 
     # Logging function
     def logMsg(self, message):
-        with open(f"log_peer_{self.local_id}.log", "a") as x:
-            x.write(f"[{datetime.now()}]: {message}\n")
+        lock = get_log_lock(self.local_id)
+        with lock:
+            with open(f"log_peer_{self.local_id}.log", "a") as x:
+                x.write(f"[{datetime.now()}]: {message}\n")
     
 # Helper function to save a piece's data to disk in the correct peer directory
 def save_piece(peer_dir, piece_index, data):

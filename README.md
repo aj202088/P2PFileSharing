@@ -12,10 +12,6 @@ How to run:
 Ex:
     python peerProcess.py 1001
 
-How we tested on our end so far:
-    Primarily through localhost, each peer on different ports
-    It doesn't terminate itself on its own yet. Must be exited manually.
-
 Bitstring might need to be installed individually, using pip install bitstring
 
 

@@ -11,6 +11,14 @@ import random
 from datetime import datetime
 import threading
 
+_log_locks = {}
+_log_locks_lock = threading.Lock()
+
+def get_log_lock(peer_id):
+    with _log_locks_lock:
+        if peer_id not in _log_locks:
+            _log_locks[peer_id] = threading.Lock()
+        return _log_locks[peer_id]
 
 class Peer:
     # Build Peer object
@@ -50,6 +58,9 @@ class Peer:
 
         self.download_counter = {}   # used to store neighboring download rates
         self.download_counter_lock = threading.Lock()   # Protects download counter
+
+        self.optimistic_neighbor = None
+        self.optimistic_lock = threading.Lock()
 
     def start_intervals(self, p, m):
         """SOURCE: https://www.tutorialspoint.com/python/python_thread_scheduling.htm"""
@@ -120,8 +131,11 @@ class Peer:
             self.download_counter = {}
 
         # Sort by download rate, use a random tiebreak
-        new_neighbors = sorted(interested_peers, key=lambda p: download_rates[p], reverse=True)
-        new_k_neighbors = new_neighbors[:self.k]
+        if self.bitfield.all(1):
+            new_k_neighbors = random.sample(interested_peers, min(self.k, len(interested_peers)))
+        else:
+            new_bors = sorted(interested_peers, key=lambda p: (download_rates[p], random.random()), reverse=True)
+            new_k_neighbors = new_bors[:self.k]
 
         # Log preferred neighbors
         self.logMsg(f"Peer [{self.peerID}] has the preferred neighbors [{','.join(map(str, sorted(new_k_neighbors)))}].")
@@ -134,8 +148,11 @@ class Peer:
                 send_msg(conn.sock, MsgType.UNCHOKE, b'')
             # Choke unchoked neighbors that are not k favorited
             elif peer_id not in new_k_neighbors and not conn.peer_choked:
-                conn.peer_choked = True
-                send_msg(conn.sock, MsgType.CHOKE, b'')
+                with self.optimistic_lock:
+                    is_optimistic = (peer_id == self.optimistic_neighbor)
+                if not is_optimistic:
+                    conn.peer_choked = True
+                    send_msg(conn.sock, MsgType.CHOKE, b'')
 
     def optimistic_unchoke(self):
         # Get list of peers
@@ -151,6 +168,9 @@ class Peer:
         random_peer_id = random.choice(choked_peers)
         conn = peer_list[random_peer_id]
 
+        with self.optimistic_lock:
+            self.optimistic_neighbor = random_peer_id
+
         # Unchoke peer
         conn.peer_choked = False
         send_msg(conn.sock, MsgType.UNCHOKE, b'')
@@ -159,5 +179,7 @@ class Peer:
         self.logMsg(f"Peer [{self.peerID}] has the optimistically unchoked neighbor [{random_peer_id}].")
 
     def logMsg(self, message):
-        with open(f"log_peer_{self.peerID}.log", "a") as x:
-            x.write(f"[{datetime.now()}]: {message}\n")
+        lock = get_log_lock(self.peerID)
+        with lock:
+            with open(f"log_peer_{self.peerID}.log", "a") as x:
+                x.write(f"[{datetime.now()}]: {message}\n")
